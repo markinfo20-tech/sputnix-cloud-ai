@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """SPUTNIX CLOUD AI — Streamlit Cloud edition."""
 import os
+from pathlib import Path
+
+# Project configuration
+LOGO_URL = "https://s3.twcstorage.ru/35afe091-cipr/award-project-logos/Sputnix_new_logo_2025-2.png"
+MODEL_ID = "uga-gaim/CLIPSeg-CloudSEN12Plus-FFT"
+
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 import io
