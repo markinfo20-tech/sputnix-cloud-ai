@@ -1,0 +1,12 @@
+SPUTNIX CLOUD AI — model attribution
+
+Cloud segmentation model:
+uga-gaim/CLIPSeg-CloudSEN12Plus-FFT
+https://huggingface.co/uga-gaim/CLIPSeg-CloudSEN12Plus-FFT
+License stated on model card: Creative Commons Attribution 4.0 International (CC BY 4.0).
+
+The model card describes fine-tuning for four-class cloud segmentation (clear, thick cloud,
+thin cloud, cloud shadow) on Sentinel-2 imagery using CloudSEN12+.
+Please preserve attribution to the model authors when redistributing this application.
+
+SPUTNIX CLOUD AI is an independent demo/prototype and is not the model author's official product.

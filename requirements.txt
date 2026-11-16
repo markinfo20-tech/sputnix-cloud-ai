@@ -1,10 +1,9 @@
-streamlit>=1.36,<2
-# CPU-only PyTorch to avoid downloading CUDA libraries on a free cloud host
+streamlit>=1.40,<2
+numpy>=1.26,<3
+pandas>=2.1,<3
+Pillow>=10
+tifffile>=2024.2
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.5.1+cpu
 transformers>=4.44,<5
-pillow>=10
-numpy>=1.26
-pandas>=2.1
-tifffile>=2024.2
 safetensors>=0.4
