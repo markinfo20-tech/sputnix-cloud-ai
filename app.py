@@ -1,25 +1,27 @@
 # -*- coding: utf-8 -*-
-"""SPUTNIX CLOUD AI — Streamlit Cloud edition."""
-import os
-from pathlib import Path
-
-# Project configuration
-LOGO_URL = "https://s3.twcstorage.ru/35afe091-cipr/award-project-logos/Sputnix_new_logo_2025-2.png"
-MODEL_ID = "uga-gaim/CLIPSeg-CloudSEN12Plus-FFT"
-
-os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+"""SPUTNIX CLOUD AI — deployment-oriented Streamlit application."""
+from __future__ import annotations
 
 import io
-import csv
-import zipfile
+import os
+import time
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import streamlit as st
-import torch
-import torch.nn.functional as F
 import tifffile
 from PIL import Image, ImageOps
-from transformers import CLIPSegProcessor, CLIPSegForImageSegmentation
+
+from cloud_core import cloud_percentage, expand_uploads, build_results_zip
+
+MODEL_ID = "uga-gaim/CLIPSeg-CloudSEN12Plus-FFT"
+LOGO_URL = "https://s3.twcstorage.ru/35afe091-cipr/award-project-logos/Sputnix_new_logo_2025-2.png"
+MODEL_WEIGHTS_MB = 603
+RECOMMENDED_RAM_MB = 1536  # estimated practical minimum, not a vendor guarantee
+
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 st.set_page_config(
     page_title="SPUTNIX CLOUD AI",
@@ -31,328 +33,334 @@ st.set_page_config(
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
-html, body, [class*="css"] { font-family: Manrope, Arial, sans-serif; }
-.stApp { background:#f3f4f6; color:#171717; }
-.block-container { max-width:1480px; padding-top:1.3rem; padding-bottom:2rem; }
-[data-testid="stSidebar"] { background:#171717; border-right:3px solid #d71920; }
+:root { --red:#d71920; --black:#151515; --ink:#242424; --muted:#707070; --line:#e8e8e8; }
+html, body, [class*="css"] { font-family:Manrope,Arial,sans-serif; }
+.stApp { background:#f6f6f6; color:var(--ink); }
+.block-container { max-width:1360px; padding-top:1.15rem; padding-bottom:2.5rem; }
+[data-testid="stSidebar"] { background:#171717; border-right:3px solid var(--red); }
 [data-testid="stSidebar"] * { color:#f7f7f7 !important; }
-[data-testid="stSidebar"] [data-testid="stSlider"] [data-testid="stMarkdownContainer"] p { color:#f7f7f7; }
-.brand-head { background:#fff; border:1px solid #e3e3e3; border-radius:18px;
-   padding:18px 25px; display:flex; align-items:center; gap:25px;
-   box-shadow:0 5px 24px rgba(0,0,0,.045); margin-bottom:20px; }
-.brand-head img { width:245px; max-width:35%; height:auto; object-fit:contain; }
-.brand-copy { border-left:1px solid #dedede; padding-left:24px; }
-.eyebrow { color:#d71920; font-size:11px; font-weight:800; letter-spacing:.17em; }
-.brand-copy h1 { margin:4px 0 3px; color:#111; font-size:clamp(24px,3vw,36px); font-weight:800; }
-.brand-copy p { margin:0; color:#666; font-size:14px; }
-.section-title { color:#151515; font-size:21px; font-weight:800; margin:12px 0 12px; }
-.card { background:#fff; border:1px solid #e5e5e5; border-radius:15px;
-   padding:18px 20px; box-shadow:0 4px 16px rgba(0,0,0,.035); height:100%; }
-.card-label { font-size:11px; color:#777; text-transform:uppercase; letter-spacing:.11em; font-weight:700; }
-.card-value { font-size:31px; font-weight:800; color:#141414; margin-top:4px; }
-.card-accent { width:33px; height:4px; background:#d71920; border-radius:9px; margin-bottom:13px; }
-.step { background:#fff; border:1px solid #e4e4e4; border-radius:13px; padding:16px;
-   color:#333; min-height:110px; }
-.step-num { color:#d71920; font-weight:800; font-size:12px; letter-spacing:.12em; }
-.step-title { font-weight:800; color:#171717; margin:5px 0 4px; }
-.muted { color:#707070; font-size:12px; }
-.decision-good { color:#16834a; font-weight:800; }
-.decision-bad { color:#d71920; font-weight:800; }
-.stButton>button, .stDownloadButton>button { border-radius:9px; font-weight:800; min-height:44px; }
-.stButton>button[kind="primary"] { background:#d71920; border:1px solid #d71920; color:white; }
-.stButton>button[kind="primary"]:hover { background:#b9141a; border-color:#b9141a; }
-div[data-testid="stDataFrame"] { background:#fff; border-radius:12px; }
-hr { border-color:#dedede; }
+[data-testid="stSidebar"] [data-testid="stSlider"] [data-testid="stMarkdownContainer"] p { color:#f7f7f7 !important; }
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] { color:#c9c9c9 !important; }
+.brand { background:#fff; border:1px solid var(--line); border-radius:18px; padding:20px 26px;
+  display:flex; align-items:center; gap:22px; box-shadow:0 7px 24px rgba(0,0,0,.035); margin-bottom:22px; }
+.brand-logo { flex:0 0 auto; width:200px; max-width:28%; display:flex; align-items:center; }
+.brand-logo img { max-width:100%; max-height:68px; object-fit:contain; }
+.brand-divider { height:62px; width:1px; background:#e5e5e5; }
+.brand-kicker { color:var(--red); font-size:10px; font-weight:800; letter-spacing:.2em; text-transform:uppercase; }
+.brand h1 { margin:2px 0 3px; color:var(--black); font-size:clamp(25px,3vw,37px); line-height:1.15; font-weight:800; letter-spacing:-.04em; }
+.brand p { margin:0; color:#666; font-size:13px; }
+.section-head { display:flex; align-items:center; gap:10px; margin:23px 0 12px; color:var(--black); font-size:20px; font-weight:800; }
+.section-head:before { content:''; width:5px; height:23px; background:var(--red); border-radius:4px; }
+.info-card { background:#fff; border:1px solid var(--line); border-radius:14px; padding:15px 17px; min-height:94px; }
+.info-num { color:var(--red); font-size:10px; letter-spacing:.14em; font-weight:800; }
+.info-title { color:#161616; font-weight:800; margin:5px 0 2px; }
+.info-text { color:#747474; font-size:12px; line-height:1.45; }
+.metric { background:#fff; border:1px solid var(--line); border-radius:14px; padding:16px 18px; min-height:112px; }
+.metric-label { color:#777; font-size:10px; letter-spacing:.13em; font-weight:800; text-transform:uppercase; }
+.metric-value { color:#111; font-size:29px; font-weight:800; letter-spacing:-.04em; padding-top:5px; }
+.metric-line { height:4px; width:30px; background:var(--red); border-radius:4px; margin-bottom:12px; }
+.stButton>button, .stDownloadButton>button { min-height:44px; border-radius:9px; font-weight:800; }
+.stButton>button[kind="primary"], .stDownloadButton>button[kind="primary"] { background:var(--red); border-color:var(--red); color:#fff; }
+.stButton>button[kind="primary"]:hover, .stDownloadButton>button[kind="primary"]:hover { background:#b9151c; border-color:#b9151c; }
+[data-testid="stFileUploader"] { background:#fff; border:1px dashed #c8c8c8; border-radius:13px; padding:8px; }
+div[data-testid="stDataFrame"] { border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+.small-note { color:#777; font-size:11px; line-height:1.5; }
+.result-good { color:#087443; font-weight:800; }
+.result-bad { color:var(--red); font-weight:800; }
+hr { border-color:#e6e6e6; }
+@media(max-width:700px) { .brand { padding:16px; gap:13px; } .brand-logo { width:100px; } .brand-divider { height:48px; } .brand p { font-size:11px; } }
 </style>
 """, unsafe_allow_html=True)
 
+
+def get_memory_limit_mb() -> int | None:
+    """Read Linux cgroup memory limit, where available."""
+    candidates = [Path("/sys/fs/cgroup/memory.max"), Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")]
+    for path in candidates:
+        try:
+            value = path.read_text().strip()
+            if value == "max":
+                continue
+            limit = int(value)
+            # cgroup v1 sometimes reports a huge sentinel for no limit.
+            if limit > 1_000_000_000_000:
+                continue
+            return int(limit / (1024 * 1024))
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 @st.cache_resource(show_spinner=False)
 def load_model():
-    device = "cuda" if torch.cuda.is_available() else (
-        "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu"
-    )
+    # Heavy ML imports are deferred until the user actually starts inference.
+    import torch
+    import torch.nn.functional as F
+    from transformers import CLIPSegProcessor, CLIPSegForImageSegmentation
+
+    try:
+        torch.set_num_threads(1)
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        pass
     processor = CLIPSegProcessor.from_pretrained(MODEL_ID)
-    model = CLIPSegForImageSegmentation.from_pretrained(MODEL_ID)
-    model.to(device)
+    model = CLIPSegForImageSegmentation.from_pretrained(MODEL_ID, use_safetensors=True)
     model.eval()
-    return processor, model, device
+    return processor, model, torch, F
 
-def read_uploaded_image(upload):
-    raw = upload.getvalue()
-    suffix = Path(upload.name).suffix.lower()
-    if suffix in (".tif", ".tiff"):
-        arr = tifffile.imread(io.BytesIO(raw))
-        arr = np.asarray(arr)
-        if arr.ndim == 2:
-            raise ValueError("В TIFF найден один канал. Для RGB-модели нужны минимум три канала.")
-        if arr.ndim == 3:
-            # Accept HWC or CHW; prefer channel-last when final dimension is 3/4.
-            if arr.shape[-1] in (3, 4):
-                rgb = arr[..., :3]
-            elif arr.shape[0] in (3, 4):
-                rgb = np.moveaxis(arr[:3], 0, -1)
+
+def read_image(name: str, raw: bytes) -> Image.Image:
+    suffix = Path(name).suffix.lower()
+    if suffix in {".tif", ".tiff"}:
+        array = np.asarray(tifffile.imread(io.BytesIO(raw)))
+        if array.ndim == 2:
+            array = np.stack([array, array, array], axis=-1)
+        elif array.ndim == 3:
+            if array.shape[-1] in (3, 4):
+                array = array[..., :3]
+            elif array.shape[0] in (3, 4):
+                array = np.moveaxis(array[:3], 0, -1)
             else:
-                raise ValueError(f"Не удалось определить RGB-каналы TIFF: размер {arr.shape}")
+                raise ValueError(f"Не удалось определить RGB-каналы TIFF: {array.shape}. Ожидаются 3 или 4 канала.")
         else:
-            raise ValueError(f"Неподдерживаемая размерность TIFF: {arr.shape}")
-        rgb = rgb.astype(np.float32)
-        out = np.zeros_like(rgb, dtype=np.uint8)
-        for ch in range(3):
-            band = rgb[..., ch]
-            good = np.isfinite(band)
-            if not good.any():
+            raise ValueError(f"Неподдерживаемая размерность TIFF: {array.shape}")
+        array = array.astype(np.float32, copy=False)
+        rgb = np.zeros(array.shape, dtype=np.uint8)
+        for band_index in range(3):
+            band = array[..., band_index]
+            valid = np.isfinite(band)
+            if not valid.any():
                 continue
-            lo, hi = np.percentile(band[good], [2, 98])
-            if hi <= lo:
-                hi = lo + 1.0
-            scaled = np.clip((band - lo) / (hi - lo), 0, 1)
-            out[..., ch] = np.nan_to_num(scaled * 255).astype(np.uint8)
-        return Image.fromarray(out, "RGB")
-    return ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("RGB")
+            low, high = np.percentile(band[valid], [2, 98])
+            if high <= low:
+                high = low + 1.0
+            scaled = np.clip((band - low) / (high - low), 0, 1)
+            rgb[..., band_index] = np.nan_to_num(scaled * 255).astype(np.uint8)
+        return Image.fromarray(rgb, "RGB")
+    with Image.open(io.BytesIO(raw)) as image:
+        return ImageOps.exif_transpose(image).convert("RGB")
 
-def run_segmentation(image, processor, model, device):
-    prompts = ["clear", "thick cloud", "thin cloud", "cloud shadow"]
-    inputs = processor(
-        text=prompts, images=[image] * len(prompts),
-        padding=True, return_tensors="pt"
-    )
-    inputs = {k: v.to(device) for k, v in inputs.items()}
+
+def predict(image: Image.Image, processor, model, torch, functional):
+    labels_prompt = ["clear", "thick cloud", "thin cloud", "cloud shadow"]
+    inputs = processor(text=labels_prompt, images=[image] * 4, padding=True, return_tensors="pt")
     with torch.inference_mode():
         logits = model(**inputs).logits
-        logits = F.interpolate(
+        logits = functional.interpolate(
             logits.unsqueeze(1), size=(image.height, image.width),
             mode="bilinear", align_corners=False
         ).squeeze(1)
-        labels = logits.argmax(dim=0).detach().cpu().numpy().astype(np.uint8)
-    cloud_percent = float(np.isin(labels, [1, 2]).mean() * 100.0)
-    return labels, cloud_percent
+        labels = logits.argmax(dim=0).cpu().numpy().astype(np.uint8)
+    return labels, cloud_percentage(labels)
 
-palette = np.array([
-    [25, 25, 25],       # clear / black
-    [215, 25, 32],      # thick cloud / red
-    [245, 155, 45],     # thin cloud / amber
-    [135, 135, 145],    # cloud shadow / grey
+
+PALETTE = np.array([
+    [20, 20, 20],       # clear
+    [215, 25, 32],      # thick cloud
+    [245, 154, 45],     # thin cloud
+    [130, 137, 148],    # shadow
 ], dtype=np.uint8)
 
-def make_mask(labels):
-    return Image.fromarray(palette[labels])
 
-def make_overlay(image, labels):
-    src = np.asarray(image).astype(np.float32)
-    clr = np.asarray(make_mask(labels)).astype(np.float32)
-    alpha = np.where(labels == 0, 0.0, 0.43)[..., None]
-    return Image.fromarray(np.clip(src * (1-alpha) + clr * alpha, 0, 255).astype(np.uint8))
+def make_mask(labels: np.ndarray) -> Image.Image:
+    return Image.fromarray(PALETTE[labels])
 
-def to_png(image):
-    out = io.BytesIO()
-    image.save(out, format="PNG")
-    return out.getvalue()
 
-def make_result_zip(results):
-    buff = io.BytesIO()
-    with zipfile.ZipFile(buff, "w", zipfile.ZIP_DEFLATED) as zf:
-        report = []
-        for i, item in enumerate(results, start=1):
-            original_name = Path(item["name"]).name
-            safe_name = f"{i:04d}_{Path(original_name).stem}"
-            original_ext = Path(original_name).suffix.lower() or ".jpg"
-            zf.writestr(f"{item['folder']}/{safe_name}{original_ext}", item["raw"])
-            zf.writestr(f"masks/{safe_name}_mask.png", to_png(item["mask"]))
-            zf.writestr(f"overlays/{safe_name}_overlay.png", to_png(item["overlay"]))
-            report.append({
-                "file": original_name,
-                "cloud_percent": round(item["cloud"], 2),
-                "threshold_percent": item["threshold"],
-                "decision": item["decision"],
-            })
-        txt = io.StringIO()
-        writer = csv.DictWriter(txt, fieldnames=[
-            "file", "cloud_percent", "threshold_percent", "decision"
-        ])
-        writer.writeheader()
-        writer.writerows(report)
-        zf.writestr("report.csv", txt.getvalue())
-    buff.seek(0)
-    return buff.getvalue()
+def make_overlay(image: Image.Image, labels: np.ndarray) -> Image.Image:
+    source = np.asarray(image).astype(np.float32)
+    mask = np.asarray(make_mask(labels)).astype(np.float32)
+    alpha = np.where(labels == 0, 0.0, 0.45)[..., None]
+    return Image.fromarray(np.clip(source * (1 - alpha) + mask * alpha, 0, 255).astype(np.uint8))
 
-# Header with the actual logo image (PNG asset served from the award site).
+
+# Header: a logo image with a clean text fallback if the remote image is unavailable.
 st.markdown(f"""
-<div class="brand-head">
-  <img src="{LOGO_URL}" alt="Логотип СПУТНИКС">
-  <div class="brand-copy">
-    <div class="eyebrow">SPUTNIX · EARTH OBSERVATION</div>
+<div class="brand">
+  <div class="brand-logo">
+    <img src="{LOGO_URL}" alt="SPUTNIX" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'">
+    <span style="display:none;font-size:25px;font-weight:900;letter-spacing:-1px;color:#111">SPUTNIX</span>
+  </div>
+  <div class="brand-divider"></div>
+  <div>
+    <div class="brand-kicker">EARTH OBSERVATION · AI ANALYTICS</div>
     <h1>CLOUD AI</h1>
-    <p>Интеллектуальный контроль облачности спутниковых снимков</p>
+    <p>Интеллектуальная оценка облачности спутниковых изображений</p>
   </div>
 </div>
 """, unsafe_allow_html=True)
 
 with st.sidebar:
-    st.markdown("## ПАНЕЛЬ ОТБОРА")
-    st.caption("Настройте порог и добавьте изображения.")
+    st.markdown("# SPUTNIX CLOUD AI")
+    st.caption("Параметры обработки")
     threshold = st.slider("Допустимая облачность", 0, 100, 75, 1, format="%d%%")
     st.markdown("---")
-    st.markdown("**ПРАВИЛО ОТБОРА**")
-    st.markdown(f"✅ Принимать: **≤ {threshold}%**")
-    st.markdown(f"⛔ Отклонять: **> {threshold}%**")
+    st.markdown("**Правило отбора**")
+    st.markdown(f"🟢 Принять: **≤ {threshold}%**")
+    st.markdown(f"🔴 Отклонить: **> {threshold}%**")
     st.markdown("---")
-    st.markdown("**МОДЕЛЬ ИИ**")
-    st.caption("CLIPSeg · CloudSEN12+")
-    st.caption("Классы: чисто, плотные облака, тонкие облака, тени.")
+    st.markdown("**Модель**")
+    st.caption("CLIPSeg · CloudSEN12+ · 4 класса")
+    st.caption("Облаками считаются плотные и тонкие облака. Тени показываются отдельно и в процент облачности не входят.")
     st.markdown("---")
-    st.caption("Первый запуск скачивает модель автоматически. Нужен интернет.")
+    st.caption("Модель скачивается при первом анализе. Рекомендуемая память хоста — примерно от 1,5 ГБ.")
+    st.caption("Многоканальный TIFF: первые три канала интерпретируются как RGB. Проверьте их порядок для данных Sputnix.")
 
-st.markdown('<div class="section-title">Рабочее пространство</div>', unsafe_allow_html=True)
-step_cols = st.columns(4)
-steps = [
-    ("01", "Загрузите", "Выберите снимки с компьютера."),
-    ("02", "Анализируйте", "ИИ найдёт облака и тени."),
-    ("03", "Проверьте", "Посмотрите процент и маску."),
-    ("04", "Скачайте", "Получите отбор и отчёт CSV."),
-]
-for col, (num, title, desc) in zip(step_cols, steps):
+st.markdown('<div class="section-head">Рабочий процесс</div>', unsafe_allow_html=True)
+cols = st.columns(3)
+for col, number, title, description in zip(
+    cols,
+    ["01", "02", "03"],
+    ["Загрузите", "Анализируйте", "Получите результат"],
+    ["Отдельные изображения или ZIP-архив с изображениями.", "Модель строит маску облаков и рассчитывает долю пикселей.", "Просмотрите карту и скачайте полный ZIP-отчёт."],
+):
     col.markdown(
-        f'<div class="step"><div class="step-num">{num} / SPUTNIX</div>'
-        f'<div class="step-title">{title}</div><div class="muted">{desc}</div></div>',
-        unsafe_allow_html=True
+        f'<div class="info-card"><div class="info-num">STEP {number}</div>'
+        f'<div class="info-title">{title}</div><div class="info-text">{description}</div></div>',
+        unsafe_allow_html=True,
     )
 
-st.markdown('<div class="section-title">1. Добавить спутниковые снимки</div>', unsafe_allow_html=True)
-uploads = st.file_uploader(
-    "Перетащите файлы сюда или нажмите «Browse files»",
-    type=["png", "jpg", "jpeg", "tif", "tiff"],
+st.markdown('<div class="section-head">1. Добавить снимки</div>', unsafe_allow_html=True)
+uploaded = st.file_uploader(
+    "Выберите изображения или ZIP-архив",
+    type=["png", "jpg", "jpeg", "tif", "tiff", "webp", "zip"],
     accept_multiple_files=True,
-    help="Можно выбрать несколько PNG, JPG или TIFF. Очень большие наборы загружайте партиями."
+    help="ZIP распаковывается в памяти без сохранения файлов на диск. Внутри поддерживаются PNG, JPG, TIFF и WEBP.",
+    key="satellite_uploads",
 )
-if uploads:
-    st.success(f"Добавлено файлов: {len(uploads)}")
-    st.caption("Поддерживаются обычные RGB-изображения и TIFF с минимум тремя каналами.")
-run_col, note_col = st.columns([1, 2])
-with run_col:
-    launch = st.button(
-        "▶  НАЧАТЬ АНАЛИЗ",
-        type="primary",
-        disabled=not bool(uploads),
-        use_container_width=True
-    )
-with note_col:
-    st.markdown(
-        '<div class="muted" style="padding:12px 4px;">'
-        'Исходники остаются нетронутыми. Анализ выполняется на сервере SPUTNIX CLOUD AI.</div>',
-        unsafe_allow_html=True
-    )
 
-if launch and uploads:
-    try:
-        with st.spinner("Загрузка ИИ-модели. При первом запуске скачивается около 603 МБ весов…"):
-            processor, model, device = load_model()
-        results = []
-        progress = st.progress(0, text="Подготовка файлов…")
-        for idx, upload in enumerate(uploads):
-            try:
-                raw = upload.getvalue()
-                image = read_uploaded_image(upload)
-                # Limit working resolution on very large images to avoid exhausting RAM.
-                # The original file is preserved in the downloadable package.
-                work = image.copy()
-                work.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
-                labels_small, cloud_pct = run_segmentation(work, processor, model, device)
-                if work.size != image.size:
-                    labels = np.asarray(
-                        Image.fromarray(labels_small).resize(image.size, Image.Resampling.NEAREST)
-                    )
-                else:
-                    labels = labels_small
-                decision = "ОТКЛОНЁН" if cloud_pct > threshold else "ПРИНЯТ"
-                results.append({
-                    "name": upload.name, "raw": raw, "image": image,
-                    "cloud": cloud_pct, "decision": decision, "threshold": threshold,
-                    "folder": "rejected" if decision == "ОТКЛОНЁН" else "accepted",
-                    "mask": make_mask(labels), "overlay": make_overlay(image, labels),
-                })
-            except Exception as exc:
-                st.error(f"Не удалось обработать {upload.name}: {exc}")
-            progress.progress(
-                (idx + 1) / len(uploads),
-                text=f"Анализ: {idx + 1} из {len(uploads)}"
-            )
-        st.session_state["sputnix_results"] = results
-        st.session_state["sputnix_threshold"] = threshold
-        st.session_state["sputnix_errors"] = len(uploads) - len(results)
-    except Exception as exc:
-        st.error(f"Не удалось запустить модель: {exc}")
-        st.info("Проверьте интернет-соединение и свободное место. Веса модели загружаются с Hugging Face.")
+records = []
+zip_warnings = []
+if uploaded:
+    source_payloads = [(file.name, file.getvalue()) for file in uploaded]
+    records, zip_warnings = expand_uploads(source_payloads)
+    st.success(f"Найдено изображений для анализа: {len(records)}")
+    if zip_warnings:
+        with st.expander(f"Предупреждения при чтении ({len(zip_warnings)})"):
+            for warning in zip_warnings[:20]:
+                st.write(f"• {warning}")
+    if records:
+        st.caption("Первые найденные файлы: " + ", ".join(record["name"] for record in records[:5]))
+else:
+    st.caption("Можно загрузить сразу несколько файлов или один ZIP с набором снимков.")
+
+host_ram = get_memory_limit_mb()
+if host_ram is not None:
+    if host_ram < RECOMMENDED_RAM_MB:
+        st.warning(
+            f"Ограничение памяти сервера: около {host_ram} МБ. Файл весов модели занимает примерно "
+            f"{MODEL_WEIGHTS_MB} МБ, а для работы нужны дополнительные ресурсы Python и PyTorch. "
+            "На таком тарифе анализ этой моделью не запускается, чтобы страница не зависала. "
+            "Нужен сервер с большим объёмом RAM."
+        )
+
+button_col, hint_col = st.columns([1, 2])
+with button_col:
+    start = st.button("НАЧАТЬ АНАЛИЗ", type="primary", use_container_width=True, disabled=not bool(records))
+with hint_col:
+    st.markdown('<div class="small-note" style="padding-top:12px">Загрузка файла сама по себе не запускает модель. Анализ начинается только после нажатия кнопки.</div>', unsafe_allow_html=True)
+
+if start and records:
+    if host_ram is not None and host_ram < RECOMMENDED_RAM_MB:
+        st.error("Недостаточно памяти на сервере для выбранной ИИ-модели. Перезапустите приложение на хосте с большей RAM.")
+    else:
+        try:
+            with st.status("Подготовка модели ИИ…", expanded=True) as status:
+                st.write("Проверяем и загружаем веса CLIPSeg. При первом запуске скачивается около 603 МБ.")
+                processor, model, torch, functional = load_model()
+                status.update(label="Модель готова", state="complete", expanded=False)
+
+            outputs = []
+            progress = st.progress(0, text="Начинаем обработку…")
+            started_at = time.perf_counter()
+            for index, record in enumerate(records, 1):
+                file_started = time.perf_counter()
+                try:
+                    original = read_image(record["name"], record["raw"])
+                    work = original.copy()
+                    work.thumbnail((768, 768), Image.Resampling.LANCZOS)
+                    labels, cloud_pct = predict(work, processor, model, torch, functional)
+                    decision = "ОТКЛОНЁН" if cloud_pct > threshold else "ПРИНЯТ"
+                    outputs.append({
+                        "name": record["name"], "raw": record["raw"], "image": work,
+                        "cloud": cloud_pct, "decision": decision, "threshold": threshold,
+                        "mask": make_mask(labels), "overlay": make_overlay(work, labels),
+                        "seconds": time.perf_counter() - file_started,
+                    })
+                except Exception as exc:
+                    st.error(f"{record['name']}: {exc}")
+                progress.progress(index / len(records), text=f"Обработано {index} из {len(records)}")
+            if outputs:
+                st.session_state["sputnix_results"] = outputs
+                st.session_state["sputnix_elapsed"] = time.perf_counter() - started_at
+                st.session_state["sputnix_threshold"] = threshold
+            else:
+                st.session_state.pop("sputnix_results", None)
+                st.error("Не удалось обработать ни одного файла. Проверьте формат и каналы TIFF.")
+        except Exception as exc:
+            st.error(f"Не удалось запустить модель: {type(exc).__name__}: {exc}")
+            st.info("Если сбой связан с памятью или тайм-аутом, тариф сервера не подходит для этой модели. Полный лог ошибки доступен в панели хостинга.")
 
 results = st.session_state.get("sputnix_results", [])
 if results:
-    st.markdown("---")
-    st.markdown('<div class="section-title">2. Результаты обработки</div>', unsafe_allow_html=True)
-    ok = sum(x["decision"] == "ПРИНЯТ" for x in results)
-    bad = len(results) - ok
-    average = float(np.mean([x["cloud"] for x in results]))
-    kpis = [
+    st.markdown('<div class="section-head">2. Результаты анализа</div>', unsafe_allow_html=True)
+    accepted = sum(row["decision"] == "ПРИНЯТ" for row in results)
+    rejected = len(results) - accepted
+    avg_cloud = float(np.mean([row["cloud"] for row in results]))
+    metrics = [
         ("Обработано", str(len(results))),
-        ("Принято", str(ok)),
-        ("Отклонено", str(bad)),
-        ("Средняя облачность", f"{average:.1f}%"),
+        ("Принято", str(accepted)),
+        ("Отклонено", str(rejected)),
+        ("Средняя облачность", f"{avg_cloud:.1f}%"),
     ]
     metric_cols = st.columns(4)
-    for col, (label, value) in zip(metric_cols, kpis):
+    for col, (label, value) in zip(metric_cols, metrics):
         col.markdown(
-            f'<div class="card"><div class="card-accent"></div>'
-            f'<div class="card-label">{label}</div>'
-            f'<div class="card-value">{value}</div></div>',
-            unsafe_allow_html=True
+            f'<div class="metric"><div class="metric-line"></div><div class="metric-label">{label}</div>'
+            f'<div class="metric-value">{value}</div></div>',
+            unsafe_allow_html=True,
         )
-    if st.session_state.get("sputnix_errors", 0):
-        st.warning(f"Не обработано файлов: {st.session_state['sputnix_errors']}.")
+    if "sputnix_elapsed" in st.session_state:
+        st.caption(f"Общее время обработки: {st.session_state['sputnix_elapsed']:.1f} сек.")
 
-    st.markdown('<div class="section-title">Список снимков</div>', unsafe_allow_html=True)
-    table = pd.DataFrame([
-        {
-            "Файл": x["name"],
-            "Облачность": f'{x["cloud"]:.2f}%',
-            "Порог": f'{x["threshold"]}%',
-            "Решение": x["decision"],
-        } for x in results
-    ])
-    st.dataframe(table, use_container_width=True, hide_index=True)
+    st.markdown('<div class="section-head">Сводная таблица</div>', unsafe_allow_html=True)
+    table = pd.DataFrame([{
+        "Файл": row["name"],
+        "Облачность": f"{row['cloud']:.2f}%",
+        "Порог": f"{row['threshold']}%",
+        "Решение": row["decision"],
+        "Время": f"{row['seconds']:.1f} с",
+    } for row in results])
+    st.dataframe(table, hide_index=True, use_container_width=True)
 
-    selected = st.selectbox(
-        "Откройте снимок для подробного просмотра",
-        options=list(range(len(results))),
-        format_func=lambda i: results[i]["name"]
-    )
-    item = results[selected]
+    st.markdown('<div class="section-head">Детальный просмотр</div>', unsafe_allow_html=True)
+    selected = st.selectbox("Выберите снимок", range(len(results)), format_func=lambda idx: results[idx]["name"])
+    current = results[selected]
     image_cols = st.columns(3)
-    image_cols[0].image(item["image"], caption="Исходный снимок", use_container_width=True)
-    image_cols[1].image(item["mask"], caption="Карта сегментации", use_container_width=True)
-    image_cols[2].image(item["overlay"], caption="Облака на снимке", use_container_width=True)
-    st.caption("Красный — плотные облака · Оранжевый — тонкие облака · Серый — тени · Чёрный — чистые пиксели")
-    verdict_class = "decision-bad" if item["decision"] == "ОТКЛОНЁН" else "decision-good"
-    st.markdown(
-        f'<div class="card" style="height:auto;margin-top:8px;">'
-        f'<div class="card-label">Решение системы</div>'
-        f'<div class="card-value" style="font-size:24px;">'
-        f'<span class="{verdict_class}">{item["decision"]}</span></div>'
-        f'<div class="muted">Облачность: {item["cloud"]:.2f}% · Допустимый порог: {item["threshold"]}%</div>'
-        f'</div>',
-        unsafe_allow_html=True
-    )
-    st.markdown("")
+    image_cols[0].image(current["image"], caption="Исходное изображение", use_container_width=True)
+    image_cols[1].image(current["mask"], caption="Маска классов", use_container_width=True)
+    image_cols[2].image(current["overlay"], caption="Наложение маски", use_container_width=True)
+    st.caption("Красный — плотные облака · Оранжевый — тонкие облака · Серый — тени · Чёрный — чистые пиксели.")
+    if current["decision"] == "ПРИНЯТ":
+        st.success(f"ПРИНЯТ — облачность {current['cloud']:.2f}% не превышает порог {current['threshold']}%.")
+    else:
+        st.error(f"ОТКЛОНЁН — облачность {current['cloud']:.2f}% выше порога {current['threshold']}%.")
+
+    st.markdown('<div class="section-head">3. Скачать результаты</div>', unsafe_allow_html=True)
     st.download_button(
-        "⬇  СКАЧАТЬ ОТЧЁТ И РЕЗУЛЬТАТЫ (ZIP)",
-        data=make_result_zip(results),
+        "СКАЧАТЬ ПОЛНЫЙ ZIP-ОТЧЁТ",
+        data=build_results_zip(results),
         file_name="SPUTNIX_CLOUD_AI_results.zip",
         mime="application/zip",
+        type="primary",
         use_container_width=True,
     )
-    st.caption("В ZIP: принятые и отклонённые оригиналы, маски, изображения с наложением и report.csv.")
+    st.caption("Внутри ZIP: исходные снимки в папках accepted/rejected, маски, наложения, report.csv и пояснение.")
 
 st.markdown("---")
 st.markdown(
-    '<div class="muted">SPUTNIX CLOUD AI · Демонстрационный прототип. '
-    'Модель обучена на Sentinel-2; её результаты на данных Sputnix нужно проверить отдельно. '
-    'Для многоспектральных TIFF требуется подтвердить порядок каналов.</div>',
-    unsafe_allow_html=True
+    '<div class="small-note">SPUTNIX CLOUD AI · Демонстрационный прототип. Модель обучена на Sentinel-2 / CloudSEN12+. '
+    'Показатель облачности — доля пикселей, классифицированных как thick cloud или thin cloud. '
+    'Точность на данных Sputnix нельзя считать подтверждённой без размеченной контрольной выборки. '
+    'Для многоспектрального TIFF требуется подтвердить порядок каналов.</div>',
+    unsafe_allow_html=True,
 )
